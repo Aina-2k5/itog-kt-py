@@ -1,10 +1,8 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from typing import List
 import httpx
 
-app = FastAPI(title="Конвертер валют", version="1.0")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -13,84 +11,49 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class ConversionResponse(BaseModel):
-    amount: float
-    from_currency: str
-    to_currency: str
-    converted_amount: float
-    rate: float
-    source: str
-
-class ErrorResponse(BaseModel):
-    detail: str
-
-class CurrenciesResponse(BaseModel):
-    currencies: List[str]
-
 SUPPORTED_CURRENCIES = ["USD", "EUR", "RUB", "GBP", "JPY", "CNY"]
+API_URL = "https://open.er-api.com/v6/latest/USD"
 
-FIXED_RATES = {
-    "USD": 1.0,
-    "EUR": 0.92,
-    "RUB": 92.5,
-    "GBP": 0.79,
-    "JPY": 157.3,
-    "CNY": 7.24
-}
-
-API_URL = "https://api.exchangerate-api.com/v4/latest/USD"
-
-
-@app.get("/convert", 
-         response_model=ConversionResponse,
-         responses={400: {"model": ErrorResponse}},
-         summary="Конвертация валют",
-         description="Конвертирует сумму из одной валюты в другую")
-async def convert_currency(
-    amount: float,
-    from_currency: str,
-    to_currency: str
-):
-    from_currency = from_currency.upper()
-    to_currency = to_currency.upper()
+@app.get("/convert")
+async def convert_currency(amount: float, from_currency: str, to_currency: str):
+    from_curr = from_currency.upper()
+    to_curr = to_currency.upper()
     
     if amount < 0:
-        raise HTTPException(status_code=400, detail="Сумма не может быть отрицательной")
+        raise HTTPException(status_code=400, detail="Сумм отрицательный хал йиш яц")
     
-    if from_currency not in SUPPORTED_CURRENCIES:
-        raise HTTPException(status_code=400, detail=f"Неподдерживаемая валюта: {from_currency}")
+    if from_curr not in SUPPORTED_CURRENCIES:
+        raise HTTPException(status_code=400, detail=f"Неподдерживаемая валюта: {from_curr}")
     
-    if to_currency not in SUPPORTED_CURRENCIES:
-        raise HTTPException(status_code=400, detail=f"Неподдерживаемая валюта: {to_currency}")
-    
+    if to_curr not in SUPPORTED_CURRENCIES:
+        raise HTTPException(status_code=400, detail=f"Неподдерживаемая валюта: {to_curr}")
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(API_URL, timeout=10.0)
-            if response.status_code == 200:
-                data = response.json()
-                rates = data.get("rates", FIXED_RATES)
-            else:
-                rates = FIXED_RATES
-    except Exception:
-        rates = FIXED_RATES
+            if response.status_code != 200:
+                raise HTTPException(status_code=503, detail="Ошибка API курсов валют")
+            
+            data = response.json()
+            rates = data.get("rates")
+            
+            if from_curr not in rates or to_curr not in rates:
+                raise HTTPException(status_code=503, detail="Валют яц в ответе API")
+
+    except httpx.RequestError:
+        raise HTTPException(status_code=503, detail="Соединени яц")
+
+    rate_from = rates[from_curr]
+    rate_to = rates[to_curr]
     
-    amount_in_usd = amount / rates[from_currency]
-    converted_amount = amount_in_usd * rates[to_currency]
-    exchange_rate = rates[to_currency] / rates[from_currency]
+    converted_amount = (amount / rate_from) * rate_to
+    exchange_rate = rate_to / rate_from
     
     return {
         "amount": amount,
-        "from_currency": from_currency,
-        "to_currency": to_currency,
+        "from_currency": from_curr,
+        "to_currency": to_curr,
         "converted_amount": round(converted_amount, 2),
         "rate": round(exchange_rate, 4),
-        "source": "live" if rates != FIXED_RATES else "fixed"
+        "source": "live_api"
     }
-
-
-@app.get("/currencies", 
-         response_model=CurrenciesResponse,
-         summary="Список валют",
-         description="Возвращает список поддерживаемых валют")
-async def get_supported_currencies():
-    return {"currencies": SUPPORTED_CURRENCIES}
